@@ -10,14 +10,14 @@ import (
 )
 
 type Client struct {
-	api         *cloudflare.API
-	zoneID      string
-	domainName  string
-	recordName  string
-	recordType  string
-	recordID    string
-	currentURL  string
-	currentTTL  int
+	api            *cloudflare.API
+	zoneID         string
+	domainName     string
+	recordName     string
+	recordType     string
+	recordID       string
+	currentURL     string
+	currentTTL     int
 	currentProxied bool
 }
 
@@ -39,28 +39,36 @@ func NewClient(apiToken, zoneID, domainName, recordName string) (*Client, error)
 // Initialize gets the current record configuration
 func (c *Client) Initialize() error {
 	ctx := context.Background()
-	
-	// Find the record
-	records, err := c.api.DNSRecords(ctx, c.zoneID, cloudflare.DNSRecord{
+
+	// Create a ResourceContainer using the zone ID
+	rc := cloudflare.ZoneIdentifier(c.zoneID)
+
+	// Define list parameters
+	params := cloudflare.ListDNSRecordsParams{
 		Name: c.recordName + "." + c.domainName,
 		Type: c.recordType,
-	})
-	
+	}
+
+	// Find the record
+	records, _, err := c.api.ListDNSRecords(ctx, rc, params)
+
 	if err != nil {
 		return fmt.Errorf("failed to get DNS records: %w", err)
 	}
-	
+
 	if len(records) == 0 {
 		return errors.New("no matching DNS records found")
 	}
-	
+
 	// Store the current record details
 	record := records[0]
 	c.recordID = record.ID
 	c.currentURL = record.Content
 	c.currentTTL = record.TTL
-	c.currentProxied = record.Proxied
-	
+	if record.Proxied != nil {
+		c.currentProxied = *record.Proxied
+	}
+
 	log.Printf("Found DNS record: %s -> %s (ID: %s)", record.Name, record.Content, record.ID)
 	return nil
 }
@@ -73,22 +81,27 @@ func (c *Client) UpdateRedirect(targetURL string) error {
 	}
 
 	ctx := context.Background()
-	
-	// Create the updated record
-	updatedRecord := cloudflare.DNSRecord{
+
+	// Create a ResourceContainer using the zone ID
+	rc := cloudflare.ZoneIdentifier(c.zoneID)
+
+	// Create update parameters
+	proxied := c.currentProxied
+	params := cloudflare.UpdateDNSRecordParams{
+		ID:      c.recordID,
 		Type:    c.recordType,
 		Name:    c.recordName,
 		Content: targetURL,
 		TTL:     c.currentTTL,
-		Proxied: c.currentProxied,
+		Proxied: &proxied,
 	}
-	
+
 	// Update the record
-	err := c.api.UpdateDNSRecord(ctx, c.zoneID, c.recordID, updatedRecord)
+	_, err := c.api.UpdateDNSRecord(ctx, rc, params)
 	if err != nil {
 		return fmt.Errorf("failed to update DNS record: %w", err)
 	}
-	
+
 	log.Printf("Successfully updated DNS record to point to: %s", targetURL)
 	c.currentURL = targetURL
 	return nil

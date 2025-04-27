@@ -10,16 +10,17 @@ import (
 )
 
 type Service struct {
-	twitchClient    *twitch.Client
+	twitchClient     *twitch.Client
 	cloudflareClient *cloudflare.Client
-	webhookServer   *webhook.WebhookServer
-	config          *Config
+	webhookServer    *webhook.WebhookServer
+	config           *Config
 }
 
 type Config struct {
 	TwitchClientID     string
 	TwitchClientSecret string
-	TwitchChannelName  string
+	TwitchChannelNames []string // Changed to a slice of channel names
+	DefaultURL         string    // Added default URL fallback
 	CloudflareAPIToken string
 	CloudflareZoneID   string
 	CloudflareDomain   string
@@ -35,7 +36,7 @@ func NewService(config *Config) (*Service, error) {
 	twitchClient, err := twitch.NewClient(
 		config.TwitchClientID,
 		config.TwitchClientSecret,
-		config.TwitchChannelName,
+		config.TwitchChannelNames,
 	)
 	if err != nil {
 		return nil, err
@@ -83,7 +84,13 @@ func (s *Service) Start() error {
 	}
 
 	// Subscribe to Twitch stream events
-	log.Printf("Subscribing to stream events for channel: %s", s.config.TwitchChannelName)
+	channels := s.twitchClient.GetChannelNames()
+	channelList := "'"+channels[0]+"'"
+	for i := 1; i < len(channels); i++ {
+		channelList += ", '" + channels[i] + "'"
+	}
+	log.Printf("Subscribing to stream events for channels: %s", channelList)
+	
 	if err := s.twitchClient.SubscribeToStreamStatus(s.config.WebhookURL, s.config.WebhookSecret); err != nil {
 		log.Printf("Warning: Failed to subscribe to stream events: %v", err)
 		log.Println("Falling back to polling for stream status")
@@ -91,7 +98,9 @@ func (s *Service) Start() error {
 	}
 
 	// Check current stream status
-	s.checkStreamStatus()
+	if err := s.checkStreamStatus(); err != nil {
+		log.Printf("Warning: Initial stream status check failed: %v", err)
+	}
 
 	// Start webhook server
 	return s.webhookServer.Start()
@@ -103,55 +112,101 @@ func (s *Service) startPolling() {
 
 	for {
 		<-ticker.C
-		s.checkStreamStatus()
+		if err := s.checkStreamStatus(); err != nil {
+			log.Printf("Error checking stream status during polling: %v", err)
+		}
 	}
 }
 
-func (s *Service) checkStreamStatus() {
+func (s *Service) checkStreamStatus() error {
 	isLive, streamURL, err := s.twitchClient.IsStreamLive()
 	if err != nil {
 		log.Printf("Error checking stream status: %v", err)
-		return
+		return err
 	}
 
 	if isLive {
-		log.Printf("Channel %s is live", s.config.TwitchChannelName)
+		log.Printf("Found a live channel, redirecting to: %s", streamURL)
 		if err := s.cloudflareClient.UpdateRedirect(streamURL); err != nil {
 			log.Printf("Error updating redirect: %v", err)
+			return err
 		}
 	} else {
-		log.Printf("Channel %s is offline", s.config.TwitchChannelName)
-		// You might want to handle the offline state differently
-		// For example, redirect to a different URL or do nothing
+		log.Printf("No channels are currently live, redirecting to default URL: %s", s.config.DefaultURL)
+		if s.config.DefaultURL != "" {
+			if err := s.cloudflareClient.UpdateRedirect(s.config.DefaultURL); err != nil {
+				log.Printf("Error updating redirect to default URL: %v", err)
+				return err
+			}
+		} else {
+			log.Printf("No default URL configured, keeping current redirect")
+		}
 	}
+	
+	return nil
 }
 
 // HandleStreamOnline implements webhook.StreamStatusHandler
 func (s *Service) HandleStreamOnline(channelName string) error {
 	log.Printf("Stream went online for channel: %s", channelName)
-	
-	// Only process events for the configured channel
-	if channelName != s.config.TwitchChannelName {
-		log.Printf("Ignoring event for different channel: %s", channelName)
+
+	// Verify this is one of our monitored channels
+	channelNames := s.twitchClient.GetChannelNames()
+	isMonitored := false
+	for _, name := range channelNames {
+		if channelName == name {
+			isMonitored = true
+			break
+		}
+	}
+
+	if !isMonitored {
+		log.Printf("Ignoring event for unmonitored channel: %s", channelName)
 		return nil
 	}
-	
-	streamURL := s.twitchClient.GetStreamURL()
-	return s.cloudflareClient.UpdateRedirect(streamURL)
+
+	// Recheck all streams to get the priority (in case multiple channels are live)
+	return s.checkStreamStatus()
 }
 
 // HandleStreamOffline implements webhook.StreamStatusHandler
 func (s *Service) HandleStreamOffline(channelName string) error {
 	log.Printf("Stream went offline for channel: %s", channelName)
-	
-	// Only process events for the configured channel
-	if channelName != s.config.TwitchChannelName {
-		log.Printf("Ignoring event for different channel: %s", channelName)
+
+	// Verify this is one of our monitored channels
+	channelNames := s.twitchClient.GetChannelNames()
+	isMonitored := false
+	for _, name := range channelNames {
+		if channelName == name {
+			isMonitored = true
+			break
+		}
+	}
+
+	if !isMonitored {
+		log.Printf("Ignoring event for unmonitored channel: %s", channelName)
 		return nil
 	}
+
+	// Recheck all streams to see if any other channel is live
+	isLive, streamURL, err := s.twitchClient.IsStreamLive()
+	if err != nil {
+		log.Printf("Error checking stream status: %v", err)
+		return err
+	}
+
+	if isLive {
+		// Another channel is live, update to that one
+		log.Printf("Another channel is live, updating redirect to: %s", streamURL)
+		return s.cloudflareClient.UpdateRedirect(streamURL)
+	} 
 	
-	// You can customize this to redirect to a different URL when offline
-	// For now, we'll just log it
-	log.Printf("Channel %s is now offline", channelName)
+	// No channels are live, use default URL if configured
+	if s.config.DefaultURL != "" {
+		log.Printf("No channels are live, redirecting to default URL: %s", s.config.DefaultURL)
+		return s.cloudflareClient.UpdateRedirect(s.config.DefaultURL)
+	}
+	
+	log.Printf("No channels are live and no default URL configured, keeping current redirect")
 	return nil
 }

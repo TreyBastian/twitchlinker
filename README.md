@@ -4,8 +4,10 @@ TwitchLinker is a Go application that automatically updates a Cloudflare DNS rec
 
 ## Features
 
-- Listens for Twitch EventSub notifications when a channel goes live
-- Automatically updates a Cloudflare DNS record to point to the live stream
+- Monitors multiple Twitch channels and redirects to the first one that's live
+- Falls back to a default URL when no channels are live
+- Listens for Twitch EventSub notifications when channels go live or offline
+- Automatically updates a Cloudflare DNS record with the appropriate redirect
 - Falls back to polling the Twitch API if webhook setup fails
 - Configurable via environment variables
 
@@ -56,7 +58,7 @@ Use the provided ngrok URL as your `WEBHOOK_URL` in the .env file.
 
 ## Twitch EventSub
 
-This application uses Twitch's EventSub API to receive notifications when your stream goes live. It subscribes to the `stream.online` event type.
+This application uses Twitch's EventSub API to receive notifications when streams go live or offline. It subscribes to both the `stream.online` and `stream.offline` event types for all configured channels.
 
 For more information, see the [Twitch EventSub documentation](https://dev.twitch.tv/docs/eventsub).
 
@@ -66,7 +68,9 @@ For more information, see the [Twitch EventSub documentation](https://dev.twitch
 |----------|-------------|----------|
 | TWITCH_CLIENT_ID | Your Twitch application client ID | Yes |
 | TWITCH_CLIENT_SECRET | Your Twitch application client secret | Yes |
-| TWITCH_CHANNEL_NAME | The Twitch channel to monitor | Yes |
+| TWITCH_CHANNEL_NAMES | Comma-separated list of Twitch channels to monitor | Yes* |
+| TWITCH_CHANNEL_NAME | Single Twitch channel to monitor (legacy, use TWITCH_CHANNEL_NAMES instead) | Yes* |
+| DEFAULT_URL | URL to redirect to when no channels are live | No |
 | CLOUDFLARE_API_TOKEN | Your Cloudflare API token | Yes |
 | CLOUDFLARE_ZONE_ID | The Zone ID for your domain | Yes |
 | CLOUDFLARE_DOMAIN | Your domain name (e.g., example.com) | Yes |
@@ -75,6 +79,8 @@ For more information, see the [Twitch EventSub documentation](https://dev.twitch
 | WEBHOOK_SECRET | A secret for validating Twitch notifications | Yes |
 | WEBHOOK_URL | The public URL for the webhook endpoint | Yes |
 | POLL_INTERVAL_SECONDS | How often to poll Twitch if webhooks fail | No (default: 60) |
+
+\* Either TWITCH_CHANNEL_NAMES or TWITCH_CHANNEL_NAME must be provided.
 
 ## License
 

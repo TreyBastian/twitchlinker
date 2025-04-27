@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -14,10 +15,28 @@ func main() {
 	log.Println("Starting TwitchLinker service...")
 
 	// Load configuration from environment variables
+	// Get channels from comma-separated list
+	channelNamesStr := getEnv("TWITCH_CHANNEL_NAMES", "")
+	var channelNames []string
+	if channelNamesStr != "" {
+		// Split comma-separated list
+		for _, name := range splitAndTrim(channelNamesStr, ",") {
+			if name != "" {
+				channelNames = append(channelNames, name)
+			}
+		}
+	} else {
+		// Fallback to legacy single channel setting
+		if singleChannel := getEnv("TWITCH_CHANNEL_NAME", ""); singleChannel != "" {
+			channelNames = []string{singleChannel}
+		}
+	}
+	
 	config := &service.Config{
 		TwitchClientID:     getEnv("TWITCH_CLIENT_ID", ""),
 		TwitchClientSecret: getEnv("TWITCH_CLIENT_SECRET", ""),
-		TwitchChannelName:  getEnv("TWITCH_CHANNEL_NAME", ""),
+		TwitchChannelNames: channelNames,
+		DefaultURL:         getEnv("DEFAULT_URL", ""),
 		CloudflareAPIToken: getEnv("CLOUDFLARE_API_TOKEN", ""),
 		CloudflareZoneID:   getEnv("CLOUDFLARE_ZONE_ID", ""),
 		CloudflareDomain:   getEnv("CLOUDFLARE_DOMAIN", ""),
@@ -77,6 +96,25 @@ func getEnvInt(key string, defaultValue int) int {
 	return int(intValue.Seconds())
 }
 
+// splitAndTrim splits a string by a separator and trims whitespace from each part
+func splitAndTrim(s, sep string) []string {
+	if s == "" {
+		return []string{}
+	}
+	
+	parts := strings.Split(s, sep)
+	result := make([]string, 0, len(parts))
+	
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	
+	return result
+}
+
 func validateConfig(config *service.Config) error {
 	if config.TwitchClientID == "" {
 		return ErrMissingEnv("TWITCH_CLIENT_ID")
@@ -84,8 +122,8 @@ func validateConfig(config *service.Config) error {
 	if config.TwitchClientSecret == "" {
 		return ErrMissingEnv("TWITCH_CLIENT_SECRET")
 	}
-	if config.TwitchChannelName == "" {
-		return ErrMissingEnv("TWITCH_CHANNEL_NAME")
+	if len(config.TwitchChannelNames) == 0 {
+		return ErrMissingEnv("TWITCH_CHANNEL_NAMES (or TWITCH_CHANNEL_NAME)")
 	}
 	if config.CloudflareAPIToken == "" {
 		return ErrMissingEnv("CLOUDFLARE_API_TOKEN")
